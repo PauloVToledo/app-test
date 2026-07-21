@@ -1,4 +1,4 @@
-﻿# ──────────────────────────────────────────────
+# ──────────────────────────────────────────────
 # Stage 1 – Build
 # ──────────────────────────────────────────────
 FROM node:20-alpine AS builder
@@ -7,7 +7,7 @@ WORKDIR /app
 
 # Copiar manifiestos primero → mejor uso de cache de capas
 COPY package.json package-lock.json ./
-RUN npm ci --frozen-lockfile
+RUN npm ci
 
 # Copiar el resto del código fuente
 COPY . .
