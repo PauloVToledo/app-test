@@ -52,6 +52,40 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+.login-page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  box-sizing: border-box;
+}
+.login-card {
+  width: min(100%, 420px);
+  padding: 36px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+}
+.login-eyebrow {
+  margin: 0 0 10px;
+  color: var(--accent-primary);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+}
+.login-card h1 { margin: 0; font-size: 42px; }
+.login-copy { margin: 10px 0 28px; color: var(--text-muted); }
+.logout-button {
+  margin-top: 18px;
+  color: var(--text-muted);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+}
+.logout-button:hover, .logout-button:focus-visible { color: var(--text-main); }
+
 /* Scrollbar Customization */
 ::-webkit-scrollbar {
   width: 8px;
@@ -238,6 +272,15 @@ body {
   gap: 12px;
   margin-top: 10px;
 }
+.api-error {
+  margin: -8px 0 18px;
+  padding: 10px 12px;
+  color: var(--color-danger);
+  background: var(--color-danger-bg);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+}
 
 /* Buttons */
 .btn {
@@ -264,6 +307,10 @@ body {
 }
 .btn-primary:active {
   transform: scale(0.98);
+}
+.btn:disabled {
+  cursor: wait;
+  opacity: 0.7;
 }
 .btn-secondary {
   background-color: transparent;

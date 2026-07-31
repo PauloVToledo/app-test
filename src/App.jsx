@@ -1,43 +1,36 @@
 import { useState, useEffect } from 'react'
 import './index.css'
 
-function App() {
-  const [tasks, setTasks] = useState(() => {
-    const saved = localStorage.getItem('tasks')
-    if (saved) {
-      try {
-        return JSON.parse(saved)
-      } catch (e) {
-        console.error(e)
-      }
-    }
-    return [
-      {
-        id: '1',
-        title: 'Diseñar la interfaz de usuario',
-        description: 'Crear un diseño moderno con Glassmorphism, gradientes suaves y micro-interacciones.',
-        priority: 'high',
-        status: 'completed',
-        dueDate: '2026-07-15'
-      },
-      {
-        id: '2',
-        title: 'Implementar CRUD en React',
-        description: 'Asegurar que las operaciones de creación, lectura, actualización y eliminación funcionen correctamente en el estado local.',
-        priority: 'medium',
-        status: 'in_progress',
-        dueDate: '2026-07-20'
-      },
-      {
-        id: '3',
-        title: 'Optimizar estilos CSS',
-        description: 'Usar variables CSS HSL, fuentes de Google Fonts, y transiciones fluidas.',
-        priority: 'low',
-        status: 'todo',
-        dueDate: '2026-07-25'
-      }
-    ]
+const API_URL = '/api/tasks'
+
+async function request(url, options = {}, accessToken) {
+  const response = await fetch(url, {
+    headers: {
+      'Content-Type': 'application/json',
+      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+      ...options.headers,
+    },
+    ...options,
   })
+
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}))
+    throw new Error(payload.detail || 'No se pudo completar la operación.')
+  }
+
+  return response.status === 204 ? null : response.json()
+}
+
+function App() {
+  const [accessToken, setAccessToken] = useState('')
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [loginError, setLoginError] = useState('')
+  const [isLoggingIn, setIsLoggingIn] = useState(false)
+  const [tasks, setTasks] = useState([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [isSaving, setIsSaving] = useState(false)
+  const [apiError, setApiError] = useState('')
 
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
@@ -51,38 +44,89 @@ function App() {
   const [filterStatus, setFilterStatus] = useState('all')
 
   useEffect(() => {
-    localStorage.setItem('tasks', JSON.stringify(tasks))
-  }, [tasks])
-
-  const handleSubmit = (e) => {
-    e.preventDefault()
-    if (!title.trim()) return
-
-    if (editingId) {
-      setTasks(tasks.map(task => 
-        task.id === editingId 
-          ? { ...task, title, description, priority, status, dueDate }
-          : task
-      ))
-      setEditingId(null)
-    } else {
-      const newTask = {
-        id: Date.now().toString(),
-        title,
-        description,
-        priority,
-        status,
-        dueDate: dueDate || new Date().toISOString().split('T')[0]
-      }
-      setTasks([newTask, ...tasks])
+    if (!accessToken) {
+      setTasks([])
+      setIsLoading(false)
+      return
     }
 
-    // Reset Form
-    setTitle('')
-    setDescription('')
-    setPriority('medium')
-    setStatus('todo')
-    setDueDate('')
+    const loadTasks = async () => {
+      setIsLoading(true)
+      try {
+        setApiError('')
+        setTasks(await request(API_URL, {}, accessToken))
+      } catch (error) {
+        setApiError(error.message || 'No se pudieron cargar las tareas.')
+      } finally {
+        setIsLoading(false)
+      }
+    }
+    loadTasks()
+  }, [accessToken])
+
+  const handleLogin = async (event) => {
+    event.preventDefault()
+    if (isLoggingIn) return
+
+    setIsLoggingIn(true)
+    setLoginError('')
+    try {
+      const session = await request('/api/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({ username, password }),
+      })
+      setAccessToken(session.accessToken)
+      setPassword('')
+    } catch (error) {
+      setLoginError(error.message || 'No se pudo iniciar sesión.')
+    } finally {
+      setIsLoggingIn(false)
+    }
+  }
+
+  const handleLogout = async () => {
+    try {
+      await request('/api/auth/logout', { method: 'POST' }, accessToken)
+    } finally {
+      setAccessToken('')
+      cancelEdit()
+    }
+  }
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    if (!title.trim() || isSaving) return
+
+    const task = { title, description, priority, status, ...(dueDate ? { dueDate } : {}) }
+    setIsSaving(true)
+    setApiError('')
+
+    try {
+      if (editingId) {
+        const updatedTask = await request(`${API_URL}/${editingId}`, {
+          method: 'PUT',
+          body: JSON.stringify(task),
+        }, accessToken)
+        setTasks(tasks.map(currentTask => currentTask.id === editingId ? updatedTask : currentTask))
+        setEditingId(null)
+      } else {
+        const newTask = await request(API_URL, {
+          method: 'POST',
+          body: JSON.stringify(task),
+        }, accessToken)
+        setTasks([newTask, ...tasks])
+      }
+
+      setTitle('')
+      setDescription('')
+      setPriority('medium')
+      setStatus('todo')
+      setDueDate('')
+    } catch (error) {
+      setApiError(error.message || 'No se pudo guardar la tarea.')
+    } finally {
+      setIsSaving(false)
+    }
   }
 
   const handleEdit = (task) => {
@@ -94,28 +138,33 @@ function App() {
     setDueDate(task.dueDate)
   }
 
-  const handleDelete = (id) => {
+  const handleDelete = async (id) => {
     if (confirm('¿Estás seguro de que deseas eliminar esta tarea?')) {
-      setTasks(tasks.filter(task => task.id !== id))
-      if (editingId === id) {
-        setEditingId(null)
-        setTitle('')
-        setDescription('')
-        setPriority('medium')
-        setStatus('todo')
-        setDueDate('')
+      try {
+        setApiError('')
+        await request(`${API_URL}/${id}`, { method: 'DELETE' }, accessToken)
+        setTasks(tasks.filter(task => task.id !== id))
+        if (editingId === id) {
+          cancelEdit()
+        }
+      } catch (error) {
+        setApiError(error.message || 'No se pudo eliminar la tarea.')
       }
     }
   }
 
-  const toggleStatus = (id) => {
-    setTasks(tasks.map(task => {
-      if (task.id === id) {
-        const nextStatus = task.status === 'completed' ? 'todo' : 'completed'
-        return { ...task, status: nextStatus }
-      }
-      return task
-    }))
+  const toggleStatus = async (task) => {
+    const updatedTask = { ...task, status: task.status === 'completed' ? 'todo' : 'completed' }
+    try {
+      setApiError('')
+      const savedTask = await request(`${API_URL}/${task.id}`, {
+        method: 'PUT',
+        body: JSON.stringify(updatedTask),
+      }, accessToken)
+      setTasks(tasks.map(currentTask => currentTask.id === task.id ? savedTask : currentTask))
+    } catch (error) {
+      setApiError(error.message || 'No se pudo actualizar la tarea.')
+    }
   }
 
   const cancelEdit = () => {
@@ -142,6 +191,32 @@ function App() {
   const inProgressCount = tasks.filter(t => t.status === 'in_progress').length
   const todoCount = tasks.filter(t => t.status === 'todo').length
 
+  if (!accessToken) {
+    return (
+      <main className="login-page">
+        <section className="login-card" aria-labelledby="login-title">
+          <p className="login-eyebrow">ESPACIO DE TRABAJO</p>
+          <h1 id="login-title">TaskFlow</h1>
+          <p className="login-copy">Inicia sesión para administrar tus tareas.</p>
+          {loginError && <p className="api-error" role="alert">{loginError}</p>}
+          <form className="task-form" onSubmit={handleLogin}>
+            <div className="form-group">
+              <label htmlFor="username">Usuario</label>
+              <input id="username" value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" required />
+            </div>
+            <div className="form-group">
+              <label htmlFor="password">Contraseña</label>
+              <input id="password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" minLength="12" required />
+            </div>
+            <button type="submit" className="btn btn-primary" disabled={isLoggingIn}>
+              {isLoggingIn ? 'Verificando...' : 'Iniciar sesión'}
+            </button>
+          </form>
+        </section>
+      </main>
+    )
+  }
+
   return (
     <div className="app-container">
       <header className="app-header">
@@ -152,6 +227,7 @@ function App() {
           <h1>TaskFlow</h1>
         </div>
         <p className="header-subtitle">Gestiona tus proyectos y tareas con elegancia y simplicidad.</p>
+        <button type="button" className="logout-button" onClick={handleLogout}>Cerrar sesión</button>
       </header>
 
       {/* Metrics Section */}
@@ -179,6 +255,7 @@ function App() {
         <section className="form-section">
           <div className="glass-card">
             <h2>{editingId ? 'Editar Tarea' : 'Nueva Tarea'}</h2>
+            {apiError && <p className="api-error" role="alert">{apiError}</p>}
             <form onSubmit={handleSubmit} className="task-form">
               <div className="form-group">
                 <label htmlFor="title">Título</label>
@@ -242,8 +319,8 @@ function App() {
               </div>
 
               <div className="form-actions">
-                <button type="submit" className="btn btn-primary">
-                  {editingId ? 'Guardar Cambios' : 'Crear Tarea'}
+                <button type="submit" className="btn btn-primary" disabled={isSaving}>
+                  {isSaving ? 'Guardando...' : editingId ? 'Guardar Cambios' : 'Crear Tarea'}
                 </button>
                 {editingId && (
                   <button type="button" onClick={cancelEdit} className="btn btn-secondary">
@@ -298,13 +375,15 @@ function App() {
 
           {/* Cards Grid */}
           <div className="tasks-grid">
-            {filteredTasks.length > 0 ? (
+            {isLoading ? (
+              <div className="no-tasks"><p>Cargando tareas...</p></div>
+            ) : filteredTasks.length > 0 ? (
               filteredTasks.map((task) => (
                 <div key={task.id} className={`task-card ${task.status} ${task.priority}-priority`}>
                   <div className="task-card-header">
                     <button
                       className="checkbox-btn"
-                      onClick={() => toggleStatus(task.id)}
+                      onClick={() => toggleStatus(task)}
                       title={task.status === 'completed' ? 'Marcar como pendiente' : 'Marcar como completada'}
                     >
                       {task.status === 'completed' ? (

@@ -1,0 +1,6 @@
+{
+  "admin": {
+    "salt": "replace_with_a_random_hex_salt",
+    "password_hash": "replace_with_a_pbkdf2_sha256_hash"
+  }
+}

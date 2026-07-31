@@ -12,6 +12,12 @@ dist
 dist-ssr
 *.local
 
+# Datos locales del backend
+backend/*.db
+backend/data/*
+!backend/data/users.json.example
+backend/__pycache__/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
