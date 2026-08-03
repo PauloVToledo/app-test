@@ -1,0 +1,11 @@
+# TASKFLOW_DOMAIN se inyecta desde Docker Compose. Caddy gestiona ACME,
+# escucha HTTP/HTTPS y redirige HTTP a HTTPS de forma automática.
+{$TASKFLOW_DOMAIN} {
+    encode zstd gzip
+
+    # HSTS se entrega exclusivamente en la respuesta HTTPS. Activarlo exige
+    # que el dominio y sus subdominios estén ya estables y disponibles por TLS.
+    header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+
+    reverse_proxy frontend:80
+}

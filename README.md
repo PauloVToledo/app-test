@@ -63,19 +63,47 @@ propias tareas. La sesión se mantiene únicamente en memoria del navegador.
 
 ### Ejecutar con Docker
 
-Docker también permite ejecutar el frontend y el backend sin instalar Python:
+El despliegue Docker usa Caddy como proxy TLS. Caddy solicita y renueva el
+certificado HTTPS automáticamente mediante ACME; el backend y Nginx no se
+publican directamente. Antes de iniciar, crea `.env` a partir de la plantilla
+y configura un nombre DNS público que ya apunte a la IP del servidor:
+
+```bash
+cp .env.example .env
+# Edita .env: TASKFLOW_DOMAIN=tasks.tu-dominio.com
+```
+
+Los puertos TCP 80 y 443 deben estar abiertos hacia el servidor y no pueden
+estar ocupados por otro proxy. Después inicia el stack:
 
 ```bash
 docker compose up --build
 ```
 
-Abre [http://localhost:5173](http://localhost:5173). El backend no publica un
-puerto hacia el host en Docker: el frontend lo consume internamente mediante
-Nginx. Para crear un usuario en Docker:
+Abre `https://<TASKFLOW_DOMAIN>`. Las peticiones HTTP se redirigen a HTTPS y
+las respuestas HTTPS incluyen HSTS (`max-age=31536000; includeSubDomains`). No
+actives este despliegue con un dominio temporal ni habilites subdominios que no
+puedan usar HTTPS: los navegadores recordarán esa política durante un año.
+
+El backend no publica un puerto hacia el host y el frontend solo es accesible
+para Caddy dentro de Docker. Para crear un usuario en Docker:
 
 ```bash
 docker compose exec backend python create_user.py --username admin
 ```
+
+### Límites de abuso
+
+FastAPI rechaza cuerpos de solicitud de más de 1 MiB (`413`). El login admite
+como máximo cinco intentos por IP cada 60 segundos y bloquea durante 15 minutos
+la combinación usuario+IP después de cinco credenciales inválidas. Las
+respuestas bloqueadas usan `429` e incluyen `Retry-After`.
+
+Puedes ajustar estos valores en `.env` mediante `MAX_REQUEST_BODY_BYTES`,
+`LOGIN_RATE_LIMIT_ATTEMPTS`, `LOGIN_RATE_LIMIT_WINDOW_SECONDS`,
+`LOGIN_LOCKOUT_FAILURES` y `LOGIN_LOCKOUT_SECONDS`. En varias réplicas del
+backend estos límites en memoria no se comparten: para ese escenario usa un
+almacenamiento común como Redis y aplica además límites en el proxy perimetral.
 
 ### Building for Production
 
