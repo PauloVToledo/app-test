@@ -17,7 +17,7 @@ Vite resuelve esa ruta en desarrollo y Nginx la resuelve en Docker.
 | Ruta | Responsabilidad |
 | --- | --- |
 | `src/App.jsx` | Estado de UI, peticiones HTTP y CRUD de tareas. |
-| `src/index.css`, `src/App.css` | Estilos de la interfaz. |
+| `src/index.css` | Estilos de la interfaz. |
 | `backend/app.py` | Modelos Pydantic, endpoints, acceso SQLite e inicialización. |
 | `backend/data/` | Datos locales generados en ejecución; no versionar. |
 | `vite.config.js` | Proxy de desarrollo de `/api` a FastAPI. |
@@ -38,7 +38,8 @@ Conservar el contrato actual al modificar cliente o servidor:
   `in_progress`, `completed`.
 - Todas las rutas de tareas requieren `Authorization: Bearer <token>`.
 - `POST /api/auth/login` recibe `username` y `password`, y devuelve
-  `accessToken`; `POST /api/auth/logout` invalida la sesión actual.
+  `accessToken`, `refreshToken` y `expiresIn`. `POST /api/auth/refresh` rota
+  un `refreshToken`; `POST /api/auth/logout` invalida la sesión actual.
 
 En Python el campo interno es `due_date`; Pydantic expone y acepta `dueDate`
 mediante alias. No cambiar ese alias sin actualizar el frontend y documentar
@@ -79,10 +80,11 @@ Para el entorno integrado:
 docker compose up --build
 ```
 
-El frontend queda en `http://localhost:5173` y la documentación de la API en
-`/api`; el backend no se publica directamente en el host. La base de datos y
-el archivo local de usuarios se persisten mediante el volumen
-`./backend/data:/app/data`.
+El frontend se publica en el dominio HTTPS configurado y la documentación de
+la API está en `/api`; el backend no se publica directamente en el host. Las
+tareas y el archivo local de usuarios se persisten mediante el volumen
+`./backend/data:/app/data`; PostgreSQL usa el volumen Docker `postgres_data`
+para las sesiones de refresh.
 
 ## Verificación antes de entregar
 

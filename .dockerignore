@@ -3,6 +3,9 @@ dist
 dist-ssr
 .git
 .agents
+.env
+secrets
+backend/data
 .gitignore
 .vscode
 .idea

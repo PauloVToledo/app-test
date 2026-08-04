@@ -13,6 +13,11 @@ dist-ssr
 *.local
 .env
 
+# Secretos locales montados por Docker Compose. Se versionan sólo plantillas.
+secrets/*
+!secrets/
+!secrets/*.example
+
 # Datos locales del backend
 backend/*.db
 backend/data/*

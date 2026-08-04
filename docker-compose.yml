@@ -5,8 +5,37 @@ services:
       - "8000"
     env_file:
       - .env
+    environment:
+      JWT_SECRET_FILE: /run/secrets/taskflow_jwt_secret
+      POSTGRES_PASSWORD_FILE: /run/secrets/taskflow_postgres_password
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-taskflow}
+      POSTGRES_USER: ${POSTGRES_USER:-taskflow}
     volumes:
       - ./backend/data:/app/data
+    secrets:
+      - taskflow_jwt_secret
+      - taskflow_postgres_password
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-taskflow}
+      POSTGRES_USER: ${POSTGRES_USER:-taskflow}
+      POSTGRES_PASSWORD_FILE: /run/secrets/taskflow_postgres_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    secrets:
+      - taskflow_postgres_password
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   frontend:
     build: .
@@ -36,3 +65,10 @@ services:
 volumes:
   caddy_data:
   caddy_config:
+  postgres_data:
+
+secrets:
+  taskflow_jwt_secret:
+    file: ./secrets/jwt_secret
+  taskflow_postgres_password:
+    file: ./secrets/postgres_password

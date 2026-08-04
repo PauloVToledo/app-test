@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import './index.css'
 
 const API_URL = '/api/tasks'
@@ -15,7 +15,9 @@ async function request(url, options = {}, accessToken) {
 
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}))
-    throw new Error(payload.detail || 'No se pudo completar la operación.')
+    const error = new Error(payload.detail || 'No se pudo completar la operación.')
+    error.status = response.status
+    throw error
   }
 
   return response.status === 204 ? null : response.json()
@@ -23,6 +25,8 @@ async function request(url, options = {}, accessToken) {
 
 function App() {
   const [accessToken, setAccessToken] = useState('')
+  const sessionRef = useRef({ accessToken: '', refreshToken: '' })
+  const refreshInFlight = useRef(null)
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [loginError, setLoginError] = useState('')
@@ -43,6 +47,54 @@ function App() {
   const [filterPriority, setFilterPriority] = useState('all')
   const [filterStatus, setFilterStatus] = useState('all')
 
+  const clearSession = useCallback(() => {
+    sessionRef.current = { accessToken: '', refreshToken: '' }
+    setAccessToken('')
+  }, [])
+
+  const setSession = useCallback((session) => {
+    sessionRef.current = {
+      accessToken: session.accessToken,
+      refreshToken: session.refreshToken,
+    }
+    setAccessToken(session.accessToken)
+  }, [])
+
+  const refreshAccessToken = useCallback(async () => {
+    if (!sessionRef.current.refreshToken) {
+      throw new Error('La sesión expiró. Inicia sesión nuevamente.')
+    }
+    if (!refreshInFlight.current) {
+      refreshInFlight.current = request('/api/auth/refresh', {
+        method: 'POST',
+        body: JSON.stringify({ refreshToken: sessionRef.current.refreshToken }),
+      })
+        .then((session) => {
+          setSession(session)
+          return session
+        })
+        .finally(() => {
+          refreshInFlight.current = null
+        })
+    }
+    return refreshInFlight.current
+  }, [setSession])
+
+  const authenticatedRequest = useCallback(async (url, options = {}) => {
+    try {
+      return await request(url, options, sessionRef.current.accessToken)
+    } catch (error) {
+      if (error.status !== 401) throw error
+      try {
+        const session = await refreshAccessToken()
+        return await request(url, options, session.accessToken)
+      } catch (refreshError) {
+        clearSession()
+        throw refreshError
+      }
+    }
+  }, [clearSession, refreshAccessToken])
+
   useEffect(() => {
     if (!accessToken) {
       setTasks([])
@@ -54,7 +106,7 @@ function App() {
       setIsLoading(true)
       try {
         setApiError('')
-        setTasks(await request(API_URL, {}, accessToken))
+        setTasks(await authenticatedRequest(API_URL))
       } catch (error) {
         setApiError(error.message || 'No se pudieron cargar las tareas.')
       } finally {
@@ -62,7 +114,7 @@ function App() {
       }
     }
     loadTasks()
-  }, [accessToken])
+  }, [accessToken, authenticatedRequest])
 
   const handleLogin = async (event) => {
     event.preventDefault()
@@ -75,7 +127,7 @@ function App() {
         method: 'POST',
         body: JSON.stringify({ username, password }),
       })
-      setAccessToken(session.accessToken)
+      setSession(session)
       setPassword('')
     } catch (error) {
       setLoginError(error.message || 'No se pudo iniciar sesión.')
@@ -86,9 +138,12 @@ function App() {
 
   const handleLogout = async () => {
     try {
-      await request('/api/auth/logout', { method: 'POST' }, accessToken)
+      await request('/api/auth/logout', {
+        method: 'POST',
+        body: JSON.stringify({ refreshToken: sessionRef.current.refreshToken }),
+      }, sessionRef.current.accessToken)
     } finally {
-      setAccessToken('')
+      clearSession()
       cancelEdit()
     }
   }
@@ -103,17 +158,17 @@ function App() {
 
     try {
       if (editingId) {
-        const updatedTask = await request(`${API_URL}/${editingId}`, {
+        const updatedTask = await authenticatedRequest(`${API_URL}/${editingId}`, {
           method: 'PUT',
           body: JSON.stringify(task),
-        }, accessToken)
+        })
         setTasks(tasks.map(currentTask => currentTask.id === editingId ? updatedTask : currentTask))
         setEditingId(null)
       } else {
-        const newTask = await request(API_URL, {
+        const newTask = await authenticatedRequest(API_URL, {
           method: 'POST',
           body: JSON.stringify(task),
-        }, accessToken)
+        })
         setTasks([newTask, ...tasks])
       }
 
@@ -142,7 +197,7 @@ function App() {
     if (confirm('¿Estás seguro de que deseas eliminar esta tarea?')) {
       try {
         setApiError('')
-        await request(`${API_URL}/${id}`, { method: 'DELETE' }, accessToken)
+        await authenticatedRequest(`${API_URL}/${id}`, { method: 'DELETE' })
         setTasks(tasks.filter(task => task.id !== id))
         if (editingId === id) {
           cancelEdit()
@@ -157,10 +212,10 @@ function App() {
     const updatedTask = { ...task, status: task.status === 'completed' ? 'todo' : 'completed' }
     try {
       setApiError('')
-      const savedTask = await request(`${API_URL}/${task.id}`, {
+      const savedTask = await authenticatedRequest(`${API_URL}/${task.id}`, {
         method: 'PUT',
         body: JSON.stringify(updatedTask),
-      }, accessToken)
+      })
       setTasks(tasks.map(currentTask => currentTask.id === task.id ? savedTask : currentTask))
     } catch (error) {
       setApiError(error.message || 'No se pudo actualizar la tarea.')
