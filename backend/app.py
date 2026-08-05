@@ -16,6 +16,8 @@ from typing import Annotated, Literal
 from uuid import uuid4
 
 import psycopg
+from argon2.exceptions import VerificationError
+from argon2.low_level import Type, hash_secret, verify_secret
 from fastapi import Depends, FastAPI, HTTPException, Header, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
@@ -43,6 +45,13 @@ LOGIN_RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("LOGIN_RATE_LIMIT_WINDOW_SECONDS
 LOGIN_LOCKOUT_FAILURES = int(os.getenv("LOGIN_LOCKOUT_FAILURES", "5"))
 LOGIN_LOCKOUT_SECONDS = int(os.getenv("LOGIN_LOCKOUT_SECONDS", "900"))
 PASSWORD_ITERATIONS = 600_000
+# Perfil Argon2id compatible con servidores pequeños: 19 MiB, dos pasadas y
+# un hilo. Mantiene un coste de memoria relevante sin bloquear Docker Desktop.
+ARGON2_TIME_COST = 2
+ARGON2_MEMORY_COST = 19_456
+ARGON2_PARALLELISM = 1
+ARGON2_HASH_LENGTH = 32
+ARGON2_SALT_LENGTH = 16
 Priority = Literal["low", "medium", "high"]
 TaskStatus = Literal["todo", "in_progress", "completed"]
 login_requests: dict[str, list[float]] = {}
@@ -203,6 +212,20 @@ def initialize_auth_database() -> None:
     with get_auth_connection() as connection:
         connection.execute(
             """
+            CREATE TABLE IF NOT EXISTS users (
+                username TEXT PRIMARY KEY,
+                password_hash TEXT NOT NULL,
+                salt TEXT NOT NULL,
+                password_algorithm TEXT NOT NULL DEFAULT 'argon2id',
+                role TEXT NOT NULL DEFAULT 'user' CHECK(role IN ('user', 'admin')),
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        connection.execute(
+            """
             CREATE TABLE IF NOT EXISTS auth_sessions (
                 id TEXT PRIMARY KEY,
                 family_id TEXT NOT NULL,
@@ -220,15 +243,13 @@ def initialize_auth_database() -> None:
         connection.execute(
             "CREATE INDEX IF NOT EXISTS auth_sessions_active_idx ON auth_sessions (id, username) WHERE revoked_at IS NULL"
         )
+        migrate_legacy_users(connection)
 
 
-def load_users() -> dict[str, dict[str, str]]:
+def load_legacy_users() -> dict[str, dict[str, str]]:
+    """Lee el almacén previo sólo para migrarlo, nunca para autenticar."""
     if not USERS_PATH.exists():
-        raise RuntimeError(
-            f"No se encontró el archivo de usuarios en {USERS_PATH}. "
-            "Crea un usuario con backend/create_user.py."
-        )
-
+        return {}
     try:
         users = json.loads(USERS_PATH.read_text(encoding="utf-8"))
     except json.JSONDecodeError as error:
@@ -239,17 +260,84 @@ def load_users() -> dict[str, dict[str, str]]:
     return users
 
 
-def verify_password(password: str, user: dict[str, str]) -> bool:
+def migrate_legacy_users(connection: psycopg.Connection) -> None:
+    """Importa los hashes PBKDF2 existentes sin sobrescribir usuarios de PostgreSQL."""
+    for username, user in load_legacy_users().items():
+        if not isinstance(username, str) or not isinstance(user, dict):
+            continue
+        password_hash = user.get("password_hash")
+        salt = user.get("salt")
+        if not isinstance(password_hash, str) or not isinstance(salt, str):
+            continue
+        connection.execute(
+            """
+            INSERT INTO users (username, password_hash, salt, password_algorithm)
+            VALUES (%s, %s, %s, 'pbkdf2_sha256')
+            ON CONFLICT (username) DO NOTHING
+            """,
+            (username, password_hash, salt),
+        )
+
+
+def hash_password(password: str) -> tuple[str, str]:
+    salt = secrets.token_bytes(ARGON2_SALT_LENGTH)
+    password_hash = hash_secret(
+        password.encode("utf-8"),
+        salt,
+        time_cost=ARGON2_TIME_COST,
+        memory_cost=ARGON2_MEMORY_COST,
+        parallelism=ARGON2_PARALLELISM,
+        hash_len=ARGON2_HASH_LENGTH,
+        type=Type.ID,
+    ).decode("utf-8")
+    return password_hash, salt.hex()
+
+
+def verify_legacy_password(password: str, password_hash: str, salt: str) -> bool:
     try:
-        expected_hash = user["password_hash"]
-        salt = bytes.fromhex(user["salt"])
-    except (KeyError, TypeError, ValueError):
+        salt_bytes = bytes.fromhex(salt)
+    except ValueError:
         return False
 
-    password_hash = hashlib.pbkdf2_hmac(
-        "sha256", password.encode("utf-8"), salt, PASSWORD_ITERATIONS
+    candidate_hash = hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), salt_bytes, PASSWORD_ITERATIONS
     ).hex()
-    return hmac.compare_digest(password_hash, expected_hash)
+    return hmac.compare_digest(candidate_hash, password_hash)
+
+
+def verify_password(password: str, password_hash: str, salt: str, algorithm: str) -> bool:
+    if algorithm == "argon2id":
+        try:
+            return verify_secret(password_hash.encode("utf-8"), password.encode("utf-8"), Type.ID)
+        except (VerificationError, ValueError):
+            return False
+    if algorithm == "pbkdf2_sha256":
+        return verify_legacy_password(password, password_hash, salt)
+    return False
+
+
+def get_user(username: str) -> tuple[str, str, str, bool] | None:
+    with get_auth_connection() as connection:
+        return connection.execute(
+            """
+            SELECT password_hash, salt, password_algorithm, is_active
+            FROM users WHERE username = %s
+            """,
+            (username,),
+        ).fetchone()
+
+
+def upgrade_password_hash(username: str, password: str) -> None:
+    password_hash, salt = hash_password(password)
+    with get_auth_connection() as connection:
+        connection.execute(
+            """
+            UPDATE users
+            SET password_hash = %s, salt = %s, password_algorithm = 'argon2id', updated_at = NOW()
+            WHERE username = %s
+            """,
+            (password_hash, salt, username),
+        )
 
 
 def base64url_encode(value: bytes) -> str:
@@ -464,8 +552,12 @@ def require_auth(authorization: Annotated[str | None, Header()] = None) -> str:
     with get_auth_connection() as connection:
         session = connection.execute(
             """
-            SELECT 1 FROM auth_sessions
-            WHERE id = %s AND username = %s AND revoked_at IS NULL AND expires_at > NOW()
+            SELECT 1
+            FROM auth_sessions
+            JOIN users ON users.username = auth_sessions.username
+            WHERE auth_sessions.id = %s AND auth_sessions.username = %s
+              AND auth_sessions.revoked_at IS NULL AND auth_sessions.expires_at > NOW()
+              AND users.is_active = TRUE
             """,
             (claims["sid"], claims["sub"]),
         ).fetchone()
@@ -508,8 +600,13 @@ app.add_middleware(RequestBodyLimitMiddleware, max_body_bytes=MAX_REQUEST_BODY_B
 @app.post("/api/auth/login", response_model=TokenResponse, response_model_by_alias=True)
 def login(login_input: LoginInput, request: Request) -> TokenResponse:
     login_key = check_login_allowed(login_input.username, get_client_ip(request))
-    user = load_users().get(login_input.username)
-    if not user or not verify_password(login_input.password, user):
+    user = get_user(login_input.username)
+    if not user:
+        password_valid = False
+    else:
+        password_hash, salt, algorithm, is_active = user
+        password_valid = is_active and verify_password(login_input.password, password_hash, salt, algorithm)
+    if not password_valid:
         if register_failed_login(login_key):
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -519,6 +616,8 @@ def login(login_input: LoginInput, request: Request) -> TokenResponse:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Usuario o contraseña incorrectos.")
 
     clear_failed_logins(login_key)
+    if algorithm == "pbkdf2_sha256":
+        upgrade_password_hash(login_input.username, login_input.password)
     return create_session(login_input.username)
 
 

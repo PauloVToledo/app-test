@@ -1,17 +1,10 @@
-"""Crea o actualiza un usuario local para TaskFlow."""
+"""Crea o actualiza un usuario de TaskFlow en PostgreSQL."""
 
 import argparse
 import getpass
-import hashlib
-import json
 import os
-from pathlib import Path
-import secrets
 
-PASSWORD_ITERATIONS = 600_000
-USERS_PATH = Path(
-    os.getenv("USERS_PATH", Path(__file__).parent / "data" / "users.json")
-)
+from app import get_auth_connection, hash_password, initialize_auth_database
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -35,20 +28,28 @@ def main() -> None:
     if len(password) < 12:
         raise ValueError("La contraseña debe tener al menos 12 caracteres.")
 
-    USERS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    users = {}
-    if USERS_PATH.exists():
-        users = json.loads(USERS_PATH.read_text(encoding="utf-8"))
-
-    salt = secrets.token_bytes(16)
-    users[arguments.username] = {
-        "salt": salt.hex(),
-        "password_hash": hashlib.pbkdf2_hmac(
-            "sha256", password.encode("utf-8"), salt, PASSWORD_ITERATIONS
-        ).hex(),
-    }
-    USERS_PATH.write_text(json.dumps(users, indent=2) + "\n", encoding="utf-8")
-    print(f"Usuario '{arguments.username}' guardado en {USERS_PATH}.")
+    # Permite crear el primer usuario antes de iniciar FastAPI.
+    initialize_auth_database()
+    password_hash, salt = hash_password(password)
+    with get_auth_connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO users (username, password_hash, salt, password_algorithm)
+            VALUES (%s, %s, %s, 'argon2id')
+            ON CONFLICT (username) DO UPDATE SET
+                password_hash = EXCLUDED.password_hash,
+                salt = EXCLUDED.salt,
+                password_algorithm = EXCLUDED.password_algorithm,
+                is_active = TRUE,
+                updated_at = NOW()
+            """,
+            (arguments.username, password_hash, salt),
+        )
+        connection.execute(
+            "UPDATE auth_sessions SET revoked_at = NOW() WHERE username = %s AND revoked_at IS NULL",
+            (arguments.username,),
+        )
+    print(f"Usuario '{arguments.username}' guardado en PostgreSQL con Argon2id.")
 
 
 if __name__ == "__main__":

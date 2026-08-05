@@ -28,19 +28,18 @@ npm install
 
 ### Running in Development
 
-TaskFlow incluye una API FastAPI, SQLite para tareas, PostgreSQL para sesiones
-de autenticación y acceso mediante JWT. Para el entorno local se requiere
+TaskFlow incluye una API FastAPI, SQLite para tareas, PostgreSQL para usuarios
+y sesiones de autenticación, y acceso mediante JWT. Para el entorno local se requiere
 Python 3.10 o superior y una instancia PostgreSQL accesible.
 
-Antes de iniciar la API, crea el primer usuario. El archivo resultante
-`backend/data/users.json` contiene únicamente hashes de contraseña y está
-ignorado por Git:
+Antes de iniciar la API, crea el primer usuario directamente en PostgreSQL:
 
 ```bash
 python backend/create_user.py --username admin
 ```
 
-El script pide la contraseña de forma interactiva. Para automatizaciones, usa
+El script pide la contraseña de forma interactiva y la almacena como hash
+Argon2id con salt aleatorio. Para automatizaciones, usa
 la variable de entorno temporal `TASKFLOW_CREATE_USER_PASSWORD`; no la
 incluyas en archivos versionados.
 
@@ -134,6 +133,21 @@ rota el refresh token mediante `POST /api/auth/refresh` y reintenta la llamada.
 Cada refresh token se almacena únicamente como hash en PostgreSQL, se invalida
 al rotarse y la reutilización de uno rotado revoca toda su familia de sesión.
 El cierre de sesión revoca la sesión persistida de inmediato.
+
+### Usuarios y contraseñas
+
+Los usuarios se guardan en la tabla PostgreSQL `users`, con `username`,
+`password_hash`, `salt`, `password_algorithm`, estado, rol y fechas de
+creación/actualización. Las contraseñas no se guardan en un gestor de secretos:
+se derivan con Argon2id y sólo se persisten su hash y salt. El gestor de
+secretos se reserva para credenciales de infraestructura, como el secreto JWT
+y la contraseña de PostgreSQL.
+
+Al iniciar, los usuarios existentes en el antiguo `backend/data/users.json`
+se copian una sola vez a PostgreSQL conservando sus hashes PBKDF2. Tras su
+primer inicio de sesión correcto, cada uno se actualiza automáticamente a
+Argon2id; el JSON deja de usarse para autenticar y puede archivarse cuando
+todos los usuarios hayan iniciado sesión.
 
 Las rutas protegidas verifican la firma HS256, vencimiento, emisor, audiencia y
 que la sesión aún no esté revocada en PostgreSQL. Por eso reiniciar FastAPI no
