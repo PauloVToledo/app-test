@@ -1,0 +1,192 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: taskflow-log-alerts
+    folder: TaskFlow
+    interval: 1m
+    rules:
+      - uid: taskflow_backend_errors
+        title: Errores del backend TaskFlow
+        condition: C
+        for: 2m
+        noDataState: OK
+        execErrState: Alerting
+        annotations:
+          summary: El backend registró errores o excepciones durante los últimos cinco minutos.
+        labels:
+          service: backend
+          severity: warning
+        data:
+          - refId: A
+            datasourceUid: taskflow-loki
+            relativeTimeRange:
+              from: 300
+              to: 0
+            model:
+              expr: sum(count_over_time({service="backend"} |~ "(?i)(error|exception|traceback)" [5m]))
+              queryType: range
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              expression: A
+              reducer: last
+              refId: B
+              type: reduce
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params: [0]
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params: [C]
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              expression: B
+              refId: C
+              type: threshold
+      - uid: taskflow_frontend_errors
+        title: Errores del frontend TaskFlow
+        condition: C
+        for: 2m
+        noDataState: OK
+        execErrState: Alerting
+        annotations:
+          summary: El navegador reportó un error JavaScript durante los últimos cinco minutos.
+        labels:
+          service: frontend
+          severity: warning
+        data:
+          - refId: A
+            datasourceUid: taskflow-loki
+            relativeTimeRange:
+              from: 300
+              to: 0
+            model:
+              expr: sum(count_over_time({service="backend"} |= "frontend_error" [5m]))
+              queryType: range
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              expression: A
+              reducer: last
+              refId: B
+              type: reduce
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params: [0]
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params: [C]
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              expression: B
+              refId: C
+              type: threshold
+      - uid: taskflow_backend_health_missing
+        title: Health check ausente del backend
+        condition: C
+        for: 2m
+        noDataState: Alerting
+        execErrState: Alerting
+        annotations:
+          summary: No se registró una respuesta 200 del health check del backend en dos minutos.
+        labels:
+          service: backend
+          severity: critical
+        data:
+          - refId: A
+            datasourceUid: taskflow-loki
+            relativeTimeRange:
+              from: 120
+              to: 0
+            model:
+              expr: sum(count_over_time({service="backend"} |= "GET /api/healthz HTTP/1.1\" 200" [2m]))
+              queryType: range
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              expression: A
+              reducer: last
+              refId: B
+              type: reduce
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params: [1]
+                    type: lt
+                  operator:
+                    type: and
+                  query:
+                    params: [C]
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              expression: B
+              refId: C
+              type: threshold
+      - uid: taskflow_frontend_health_missing
+        title: Health check ausente del frontend
+        condition: C
+        for: 2m
+        noDataState: Alerting
+        execErrState: Alerting
+        annotations:
+          summary: No se registró una respuesta 204 del health check del frontend en dos minutos.
+        labels:
+          service: frontend
+          severity: critical
+        data:
+          - refId: A
+            datasourceUid: taskflow-loki
+            relativeTimeRange:
+              from: 120
+              to: 0
+            model:
+              expr: sum(count_over_time({service="frontend"} |= "GET /healthz HTTP/1.1\" 204" [2m]))
+              queryType: range
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              expression: A
+              reducer: last
+              refId: B
+              type: reduce
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params: [1]
+                    type: lt
+                  operator:
+                    type: and
+                  query:
+                    params: [C]
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              expression: B
+              refId: C
+              type: threshold

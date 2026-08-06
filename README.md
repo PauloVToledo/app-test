@@ -125,6 +125,30 @@ para Caddy dentro de Docker. Para crear un usuario en Docker:
 docker compose exec backend python create_user.py --username admin
 ```
 
+### Logs, alertas y health checks
+
+El perfil opcional `observability` añade Grafana, Loki y Grafana Alloy. Alloy
+lee los logs de Docker y los envía a Loki; Grafana centraliza la consulta y
+provisiona alertas para errores del backend, errores JavaScript reportados por
+el frontend y ausencia de health checks. Grafana sólo se publica en el
+loopback del host (`http://localhost:3000`), nunca a través de Caddy.
+
+Antes de activarlo, crea la contraseña local de Grafana a partir de la plantilla:
+
+```powershell
+Copy-Item secrets/grafana_admin_password.example secrets/grafana_admin_password
+# Reemplaza el contenido por una contraseña larga y única.
+docker compose --profile observability up -d --build
+```
+
+Usa `admin` o `GRAFANA_ADMIN_USER` como usuario y la contraseña de ese archivo.
+Los endpoints internos son `GET /api/healthz` para el backend (comprueba SQLite
+y PostgreSQL) y `GET /healthz` para el frontend. Docker los ejecuta cada 30
+segundos; Alloy conserva sus líneas de acceso para que las alertas detecten una
+sonda ausente. Las alertas quedan visibles en Grafana; para recibir mensajes
+externos configura un contact point en Grafana (webhook, correo, Slack, etc.)
+según el canal que uses.
+
 ### Sesiones JWT y refresh tokens
 
 El login devuelve un JWT de acceso con duración de 15 minutos y un refresh

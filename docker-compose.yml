@@ -20,6 +20,12 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://localhost:8000/api/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 
   postgres:
     image: postgres:16-alpine
@@ -42,7 +48,15 @@ services:
     expose:
       - "80"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
+    healthcheck:
+      # Nginx escucha IPv4 por defecto; evitar que localhost resuelva a ::1.
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   # Única entrada pública: Caddy obtiene y renueva el certificado ACME y
   # redirige automáticamente las peticiones HTTP a HTTPS.
@@ -60,15 +74,67 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
-      - frontend
+      frontend:
+        condition: service_healthy
+
+  # Observabilidad local: no se publica a Internet. Grafana queda limitado al
+  # loopback del host y Alloy sólo puede leer el socket Docker.
+  loki:
+    image: grafana/loki:3.3.2
+    profiles: ["observability"]
+    command: -config.file=/etc/loki/config.yml
+    expose:
+      - "3100"
+    volumes:
+      - ./monitoring/loki/config.yml:/etc/loki/config.yml:ro
+      - loki_data:/loki
+
+  alloy:
+    image: grafana/alloy:v1.7.4
+    profiles: ["observability"]
+    command: run --server.http.listen-addr=0.0.0.0:12345 /etc/alloy/config.alloy
+    volumes:
+      - ./monitoring/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      loki:
+        condition: service_started
+
+  grafana:
+    image: grafana/grafana:11.5.2
+    profiles: ["observability"]
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/taskflow_grafana_admin_password
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    secrets:
+      - taskflow_grafana_admin_password
+    depends_on:
+      loki:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
 volumes:
   caddy_data:
   caddy_config:
   postgres_data:
+  loki_data:
+  grafana_data:
 
 secrets:
   taskflow_jwt_secret:
     file: ./secrets/jwt_secret
   taskflow_postgres_password:
     file: ./secrets/postgres_password
+  taskflow_grafana_admin_password:
+    file: ./secrets/grafana_admin_password

@@ -6,6 +6,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import os
 from pathlib import Path
 import secrets
@@ -56,9 +57,11 @@ Priority = Literal["low", "medium", "high"]
 TaskStatus = Literal["todo", "in_progress", "completed"]
 login_requests: dict[str, list[float]] = {}
 failed_logins: dict[tuple[str, str], tuple[int, float, float]] = {}
+frontend_error_reports: dict[str, list[float]] = {}
 auth_state_lock = Lock()
 _jwt_secret: bytes | None = None
 _postgres_password: str | None = None
+logger = logging.getLogger("taskflow")
 
 
 class TaskInput(BaseModel):
@@ -99,6 +102,13 @@ class TokenResponse(BaseModel):
     expires_in: int = Field(serialization_alias="expiresIn")
 
     model_config = ConfigDict(populate_by_name=True)
+
+
+class FrontendErrorInput(BaseModel):
+    kind: Literal["error", "unhandledrejection"]
+    message: str = Field(min_length=1, max_length=500)
+    stack: str | None = Field(default=None, max_length=4000)
+    path: str = Field(min_length=1, max_length=2048)
 
 
 class RequestBodyTooLarge(Exception):
@@ -484,6 +494,22 @@ def get_client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
+def allow_frontend_error_report(client_ip: str) -> bool:
+    """Limita reportes anónimos para que un cliente no inunde los logs."""
+    now = time()
+    with auth_state_lock:
+        for known_ip, known_reports in list(frontend_error_reports.items()):
+            if not any(timestamp > now - 60 for timestamp in known_reports):
+                del frontend_error_reports[known_ip]
+        reports = [timestamp for timestamp in frontend_error_reports.get(client_ip, []) if timestamp > now - 60]
+        if len(reports) >= 10:
+            frontend_error_reports[client_ip] = reports
+            return False
+        reports.append(now)
+        frontend_error_reports[client_ip] = reports
+    return True
+
+
 def prune_auth_state(now: float) -> None:
     """Descarta estado vencido para que los límites en memoria sigan acotados."""
     for client_ip, request_times in list(login_requests.items()):
@@ -595,6 +621,35 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(RequestBodyLimitMiddleware, max_body_bytes=MAX_REQUEST_BODY_BYTES)
+
+
+@app.get("/api/healthz", include_in_schema=False)
+def health_check() -> dict[str, str]:
+    """Readiness check: sólo confirma disponibilidad de las dos persistencias."""
+    try:
+        with get_connection() as sqlite_connection:
+            sqlite_connection.execute("SELECT 1")
+        with get_auth_connection() as postgres_connection:
+            postgres_connection.execute("SELECT 1")
+    except (OSError, psycopg.Error, sqlite3.Error) as error:
+        logger.error("healthcheck_failed dependency=database error_type=%s", type(error).__name__)
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Servicio no disponible.")
+    return {"status": "ok"}
+
+
+@app.post("/api/telemetry/frontend-errors", status_code=status.HTTP_202_ACCEPTED, include_in_schema=False)
+def report_frontend_error(error_input: FrontendErrorInput, request: Request) -> Response:
+    client_ip = get_client_ip(request)
+    if not allow_frontend_error_report(client_ip):
+        return Response(status_code=status.HTTP_202_ACCEPTED)
+    logger.error(
+        "frontend_error kind=%s path=%r message=%r stack=%r",
+        error_input.kind,
+        error_input.path,
+        error_input.message,
+        error_input.stack,
+    )
+    return Response(status_code=status.HTTP_202_ACCEPTED)
 
 
 @app.post("/api/auth/login", response_model=TokenResponse, response_model_by_alias=True)
