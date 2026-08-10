@@ -4,13 +4,14 @@
 
 - `app/main.py`: aplicación FastAPI, modelos, endpoints e inicialización.
 - `tests/`: pruebas unitarias y de integración del servicio.
-- `data/`: SQLite y archivos de migración heredados generados localmente; no
-  se versionan.
+- `data/`: fuente heredada de una sola lectura para migrar SQLite/JSON; no se
+  versiona ni se usa como persistencia en ejecución.
 - `create_user.py`: script para crear o actualizar usuarios en PostgreSQL.
 
-El módulo se ejecuta como `app.main:app`. No muevas los datos al paquete
-`app/`: `backend/data/` es el límite persistente y en Docker se monta como
-`/app/data`.
+El módulo se ejecuta como `app.main:app`. Las tareas, usuarios y sesiones se
+persisten en PostgreSQL (`postgres_data`). Al iniciar, la migración idempotente
+importa `backend/data/taskflow.db` y `users.json` una única vez si existen;
+después, ese directorio sólo se monta como `/legacy-data:ro`.
 
 ## Contrato HTTP
 
@@ -31,6 +32,6 @@ Usar el Python confirmado:
 & 'C:\Users\paulo\AppData\Local\Programs\Python\Python313\python.exe' -m unittest discover -s tests
 ```
 
-Todo cambio de API debe conservar una migración compatible para SQLite y
-probar el CRUD autenticado: crear (`201`), listar, actualizar y eliminar
-(`204`).
+Todo cambio de esquema debe ser compatible con PostgreSQL y conservar una
+migración idempotente para instalaciones SQLite heredadas. Probar el CRUD
+autenticado: crear (`201`), listar, actualizar y eliminar (`204`).

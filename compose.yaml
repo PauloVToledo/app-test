@@ -13,7 +13,9 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-taskflow}
       POSTGRES_USER: ${POSTGRES_USER:-taskflow}
     volumes:
-      - ./backend/data:/app/data
+      # Fuente heredada de una sola lectura para migrar SQLite/JSON a PostgreSQL.
+      # El servicio ya no escribe datos de aplicación en el sistema de archivos.
+      - ./backend/data:/legacy-data:ro
     secrets:
       - taskflow_jwt_secret
       - taskflow_postgres_password

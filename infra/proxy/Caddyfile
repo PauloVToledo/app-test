@@ -1,5 +1,6 @@
-# TASKFLOW_DOMAIN se inyecta desde Docker Compose. Caddy gestiona ACME,
-# escucha HTTP/HTTPS y redirige HTTP a HTTPS de forma automática.
+# Entrada pública única: TASKFLOW_DOMAIN se inyecta desde Docker Compose.
+# Caddy se expone directamente en el VPS (80/443), gestiona ACME y redirige
+# HTTP a HTTPS. No se usa Cloudflare Tunnel.
 {$TASKFLOW_DOMAIN} {
     encode zstd gzip
 

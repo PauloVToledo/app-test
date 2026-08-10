@@ -4,7 +4,7 @@ import argparse
 import getpass
 import os
 
-from app.main import get_auth_connection, hash_password, initialize_auth_database
+from app.main import get_postgres_connection, hash_password, initialize_postgres_database
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -29,9 +29,10 @@ def main() -> None:
         raise ValueError("La contraseña debe tener al menos 12 caracteres.")
 
     # Permite crear el primer usuario antes de iniciar FastAPI.
-    initialize_auth_database()
+    # Permite crear primero un propietario si una migración heredada lo exige.
+    initialize_postgres_database(migrate_legacy_data=False)
     password_hash, salt = hash_password(password)
-    with get_auth_connection() as connection:
+    with get_postgres_connection() as connection:
         connection.execute(
             """
             INSERT INTO users (username, password_hash, salt, password_algorithm)

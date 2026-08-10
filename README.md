@@ -32,9 +32,9 @@ npm install
 
 ### Running in Development
 
-TaskFlow incluye una API FastAPI, SQLite para tareas, PostgreSQL para usuarios
-y sesiones de autenticación, y acceso mediante JWT. Para el entorno local se requiere
-Python 3.10 o superior y una instancia PostgreSQL accesible.
+TaskFlow incluye una API FastAPI con PostgreSQL para tareas, usuarios y
+sesiones de autenticación, y acceso mediante JWT. Para el entorno local se
+requiere Python 3.10 o superior y una instancia PostgreSQL accesible.
 
 Antes de iniciar la API, crea el primer usuario directamente en PostgreSQL:
 
@@ -77,21 +77,21 @@ npm run dev
 
 Open [http://localhost:5173](http://localhost:5173) in your browser to see the app running.
 Vite redirige las llamadas a `/api` hacia el backend local. Las tareas se
-guardan en `backend/data/taskflow.db` y cada usuario solo puede acceder a sus
-propias tareas.
+guardan en PostgreSQL y cada usuario solo puede acceder a sus propias tareas.
 
 ### Ejecutar con Docker
 
-El despliegue Docker usa Caddy como proxy TLS. Caddy solicita y renueva el
-certificado HTTPS automáticamente mediante ACME; el backend y Nginx no se
-publican directamente. PostgreSQL se inicia desde la imagen
-`postgres:16-alpine` y conserva las sesiones en el volumen Docker
-`postgres_data`. Antes de iniciar, crea `.env` a partir de la plantilla y
+La única entrada pública es Caddy, expuesto directamente por el VPS en los
+puertos TCP 80 y 443. Caddy solicita y renueva el certificado HTTPS
+automáticamente mediante ACME; no se utiliza Cloudflare Tunnel. El backend y
+Nginx no se publican directamente. PostgreSQL se inicia desde la imagen
+`postgres:16-alpine` y conserva tareas, usuarios y sesiones en el volumen
+Docker `postgres_data`. Antes de iniciar, crea `.env` a partir de la plantilla y
 configura un nombre DNS público que ya apunte a la IP del servidor:
 
 ```bash
 cp .env.example .env
-# Edita .env: TASKFLOW_DOMAIN=tasks.tu-dominio.com
+# El FQDN ya está documentado; ajústalo sólo si cambia la entrada pública.
 
 # Crea secretos de producción fuera de Git (un valor por archivo).
 mkdir secrets
@@ -113,17 +113,26 @@ Compose: se montan sólo en los contenedores que los necesitan, en
 sustituye estas fuentes `file:` por su integración nativa de secretos sin
 cambiar el código, que ya consume rutas de archivos.
 
-Los puertos TCP 80 y 443 deben estar abiertos hacia el servidor y no pueden
-estar ocupados por otro proxy. Después inicia el stack:
+Antes de iniciar el stack en el VPS, en el proveedor DNS crea un registro `A`
+para `tasks.testpov.querty.free.time.free.com` que apunte a la IP pública del
+VPS. Déjalo inicialmente como **DNS only** (sin proxy de Cloudflare), abre los
+puertos TCP 80 y 443 en el firewall y verifica que ningún otro proceso los
+ocupe. Caddy obtendrá el certificado ACME cuando el DNS ya propague.
+
+Después inicia el stack:
 
 ```bash
 docker compose -f compose.yaml up --build
 ```
 
-Abre `https://<TASKFLOW_DOMAIN>`. Las peticiones HTTP se redirigen a HTTPS y
+Abre `https://tasks.testpov.querty.free.time.free.com`. Las peticiones HTTP se redirigen a HTTPS y
 las respuestas HTTPS incluyen HSTS (`max-age=31536000; includeSubDomains`). No
-actives este despliegue con un dominio temporal ni habilites subdominios que no
-puedan usar HTTPS: los navegadores recordarán esa política durante un año.
+habilites subdominios que no puedan usar HTTPS: los navegadores recordarán esa
+política durante un año. Como comprobación final desde una red externa:
+
+```bash
+curl -I https://tasks.testpov.querty.free.time.free.com
+```
 
 El backend no publica un puerto hacia el host y el frontend solo es accesible
 para Caddy dentro de Docker. Para crear un usuario en Docker:
@@ -174,11 +183,13 @@ se derivan con Argon2id y sólo se persisten su hash y salt. El gestor de
 secretos se reserva para credenciales de infraestructura, como el secreto JWT
 y la contraseña de PostgreSQL.
 
-Al iniciar, los usuarios existentes en el antiguo `backend/data/users.json`
-se copian una sola vez a PostgreSQL conservando sus hashes PBKDF2. Tras su
-primer inicio de sesión correcto, cada uno se actualiza automáticamente a
-Argon2id; el JSON deja de usarse para autenticar y puede archivarse cuando
-todos los usuarios hayan iniciado sesión.
+Al iniciar, los usuarios existentes en el antiguo `backend/data/users.json` y
+las tareas en `backend/data/taskflow.db` se importan una sola vez a PostgreSQL.
+La migración es idempotente: registra `sqlite_tasks_to_postgres_v1`, no
+sobrescribe IDs que ya existan y se detiene sin escribir tareas si falta un
+usuario propietario. Tras comprobar el conteo y acceso de cada usuario,
+archiva esos archivos fuera del repositorio. El JSON deja de usarse para
+autenticar y puede archivarse cuando todos los usuarios hayan iniciado sesión.
 
 Las rutas protegidas verifican la firma HS256, vencimiento, emisor, audiencia y
 que la sesión aún no esté revocada en PostgreSQL. Por eso reiniciar FastAPI no

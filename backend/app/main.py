@@ -1,4 +1,4 @@
-"""API de TaskFlow con tareas SQLite y sesiones JWT persistidas en PostgreSQL."""
+"""API de TaskFlow con tareas, usuarios y sesiones persistidas en PostgreSQL."""
 
 from contextlib import asynccontextmanager
 from datetime import date
@@ -26,10 +26,11 @@ from starlette.responses import JSONResponse
 
 # ``main.py`` vive en ``backend/app``; los datos persistentes pertenecen al
 # límite del servicio (``backend/data``), no al paquete de código.
-DATABASE_PATH = Path(
-    os.getenv("DATABASE_PATH", Path(__file__).resolve().parents[1] / "data" / "taskflow.db")
-)
-USERS_PATH = Path(os.getenv("USERS_PATH", DATABASE_PATH.parent / "users.json"))
+# Los archivos SQLite/JSON sólo se leen durante la migración inicial. La
+# aplicación no vuelve a escribir datos locales una vez que usa PostgreSQL.
+LEGACY_DATA_DIR = Path(os.getenv("LEGACY_DATA_DIR", Path(__file__).resolve().parents[1] / "data"))
+LEGACY_SQLITE_PATH = Path(os.getenv("LEGACY_SQLITE_PATH", LEGACY_DATA_DIR / "taskflow.db"))
+LEGACY_USERS_PATH = Path(os.getenv("LEGACY_USERS_PATH", LEGACY_DATA_DIR / "users.json"))
 JWT_SECRET_FILE = Path(os.getenv("JWT_SECRET_FILE", "/run/secrets/taskflow_jwt_secret"))
 POSTGRES_PASSWORD_FILE = Path(
     os.getenv("POSTGRES_PASSWORD_FILE", "/run/secrets/taskflow_postgres_password")
@@ -186,14 +187,7 @@ def get_postgres_password() -> str:
     return _postgres_password
 
 
-def get_connection() -> sqlite3.Connection:
-    DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(DATABASE_PATH)
-    connection.row_factory = sqlite3.Row
-    return connection
-
-
-def get_auth_connection() -> psycopg.Connection:
+def get_postgres_connection() -> psycopg.Connection:
     return psycopg.connect(
         host=POSTGRES_HOST,
         port=POSTGRES_PORT,
@@ -203,27 +197,8 @@ def get_auth_connection() -> psycopg.Connection:
     )
 
 
-def initialize_database() -> None:
-    with get_connection() as connection:
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS tasks (
-                id TEXT PRIMARY KEY,
-                title TEXT NOT NULL,
-                description TEXT NOT NULL DEFAULT '',
-                priority TEXT NOT NULL CHECK(priority IN ('low', 'medium', 'high')),
-                status TEXT NOT NULL CHECK(status IN ('todo', 'in_progress', 'completed')),
-                due_date TEXT NOT NULL
-            )
-            """
-        )
-        columns = {row["name"] for row in connection.execute("PRAGMA table_info(tasks)")}
-        if "owner" not in columns:
-            connection.execute("ALTER TABLE tasks ADD COLUMN owner TEXT NOT NULL DEFAULT 'admin'")
-
-
-def initialize_auth_database() -> None:
-    with get_auth_connection() as connection:
+def initialize_postgres_database(*, migrate_legacy_data: bool = True) -> None:
+    with get_postgres_connection() as connection:
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS users (
@@ -257,15 +232,42 @@ def initialize_auth_database() -> None:
         connection.execute(
             "CREATE INDEX IF NOT EXISTS auth_sessions_active_idx ON auth_sessions (id, username) WHERE revoked_at IS NULL"
         )
-        migrate_legacy_users(connection)
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS tasks (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL CHECK(char_length(title) BETWEEN 1 AND 200),
+                description TEXT NOT NULL DEFAULT '' CHECK(char_length(description) <= 2000),
+                priority TEXT NOT NULL CHECK(priority IN ('low', 'medium', 'high')),
+                status TEXT NOT NULL CHECK(status IN ('todo', 'in_progress', 'completed')),
+                due_date DATE NOT NULL,
+                owner TEXT NOT NULL REFERENCES users(username) ON UPDATE CASCADE ON DELETE RESTRICT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS tasks_owner_created_at_idx ON tasks (owner, created_at DESC)"
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS application_migrations (
+                name TEXT PRIMARY KEY,
+                applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        if migrate_legacy_data:
+            migrate_legacy_users(connection)
+            migrate_legacy_tasks(connection)
 
 
 def load_legacy_users() -> dict[str, dict[str, str]]:
     """Lee el almacén previo sólo para migrarlo, nunca para autenticar."""
-    if not USERS_PATH.exists():
+    if not LEGACY_USERS_PATH.exists():
         return {}
     try:
-        users = json.loads(USERS_PATH.read_text(encoding="utf-8"))
+        users = json.loads(LEGACY_USERS_PATH.read_text(encoding="utf-8"))
     except json.JSONDecodeError as error:
         raise RuntimeError("El archivo de usuarios no contiene JSON válido.") from error
 
@@ -291,6 +293,69 @@ def migrate_legacy_users(connection: psycopg.Connection) -> None:
             """,
             (username, password_hash, salt),
         )
+
+
+def migrate_legacy_tasks(connection: psycopg.Connection) -> None:
+    """Importa una vez las tareas SQLite conservando su propietario y orden."""
+    migration_name = "sqlite_tasks_to_postgres_v1"
+    if connection.execute(
+        "SELECT 1 FROM application_migrations WHERE name = %s", (migration_name,)
+    ).fetchone():
+        return
+
+    if not LEGACY_SQLITE_PATH.exists():
+        connection.execute("INSERT INTO application_migrations (name) VALUES (%s)", (migration_name,))
+        return
+
+    with sqlite3.connect(LEGACY_SQLITE_PATH) as sqlite_connection:
+        sqlite_connection.row_factory = sqlite3.Row
+        has_tasks_table = sqlite_connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'tasks'"
+        ).fetchone()
+        if not has_tasks_table:
+            connection.execute("INSERT INTO application_migrations (name) VALUES (%s)", (migration_name,))
+            return
+        legacy_columns = {
+            row["name"] for row in sqlite_connection.execute("PRAGMA table_info(tasks)")
+        }
+        owner_column = "COALESCE(owner, 'admin')" if "owner" in legacy_columns else "'admin'"
+        legacy_tasks = sqlite_connection.execute(
+            f"""
+            SELECT rowid AS legacy_rowid, id, title, description, priority, status, due_date,
+                   {owner_column} AS owner
+            FROM tasks
+            ORDER BY rowid ASC
+            """
+        ).fetchall()
+
+    legacy_owners = {str(task["owner"]) for task in legacy_tasks}
+    if legacy_owners:
+        migrated_owners = {
+            row[0]
+            for row in connection.execute(
+                "SELECT username FROM users WHERE username = ANY(%s)", (list(legacy_owners),)
+            ).fetchall()
+        }
+        missing_owners = sorted(legacy_owners - migrated_owners)
+        if missing_owners:
+            raise RuntimeError(
+                "No se pueden migrar tareas SQLite porque faltan sus usuarios en PostgreSQL: "
+                + ", ".join(missing_owners)
+            )
+
+    for task in legacy_tasks:
+        connection.execute(
+            """
+            INSERT INTO tasks (id, title, description, priority, status, due_date, owner, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, TO_TIMESTAMP(%s))
+            ON CONFLICT (id) DO NOTHING
+            """,
+            (
+                task["id"], task["title"], task["description"], task["priority"],
+                task["status"], task["due_date"], task["owner"], task["legacy_rowid"],
+            ),
+        )
+    connection.execute("INSERT INTO application_migrations (name) VALUES (%s)", (migration_name,))
 
 
 def hash_password(password: str) -> tuple[str, str]:
@@ -331,7 +396,7 @@ def verify_password(password: str, password_hash: str, salt: str, algorithm: str
 
 
 def get_user(username: str) -> tuple[str, str, str, bool] | None:
-    with get_auth_connection() as connection:
+    with get_postgres_connection() as connection:
         return connection.execute(
             """
             SELECT password_hash, salt, password_algorithm, is_active
@@ -343,7 +408,7 @@ def get_user(username: str) -> tuple[str, str, str, bool] | None:
 
 def upgrade_password_hash(username: str, password: str) -> None:
     password_hash, salt = hash_password(password)
-    with get_auth_connection() as connection:
+    with get_postgres_connection() as connection:
         connection.execute(
             """
             UPDATE users
@@ -417,7 +482,7 @@ def hash_refresh_token(refresh_token: str) -> str:
 def create_session(username: str, family_id: str | None = None) -> TokenResponse:
     session_id = str(uuid4())
     refresh_token = secrets.token_urlsafe(48)
-    with get_auth_connection() as connection:
+    with get_postgres_connection() as connection:
         connection.execute(
             """
             INSERT INTO auth_sessions (id, family_id, username, refresh_token_hash, expires_at)
@@ -436,7 +501,7 @@ def create_session(username: str, family_id: str | None = None) -> TokenResponse
 def refresh_session(refresh_token: str) -> TokenResponse:
     refresh_hash = hash_refresh_token(refresh_token)
     invalid_session = False
-    with get_auth_connection() as connection:
+    with get_postgres_connection() as connection:
         session = connection.execute(
             """
             SELECT id, family_id, username, expires_at, revoked_at
@@ -480,7 +545,7 @@ def refresh_session(refresh_token: str) -> TokenResponse:
 def revoke_session(session_id: str | None = None, refresh_token: str | None = None) -> None:
     if not session_id and not refresh_token:
         return
-    with get_auth_connection() as connection:
+    with get_postgres_connection() as connection:
         if session_id:
             connection.execute("UPDATE auth_sessions SET revoked_at = NOW() WHERE id = %s", (session_id,))
         elif refresh_token:
@@ -579,7 +644,7 @@ def require_auth(authorization: Annotated[str | None, Header()] = None) -> str:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Autenticación requerida.")
     claims = decode_access_token(authorization.removeprefix("Bearer "))
-    with get_auth_connection() as connection:
+    with get_postgres_connection() as connection:
         session = connection.execute(
             """
             SELECT 1
@@ -596,14 +661,14 @@ def require_auth(authorization: Annotated[str | None, Header()] = None) -> str:
     return str(claims["sub"])
 
 
-def row_to_task(row: sqlite3.Row) -> Task:
+def row_to_task(row: tuple[str, str, str, str, str, date]) -> Task:
     return Task(
-        id=row["id"],
-        title=row["title"],
-        description=row["description"],
-        priority=row["priority"],
-        status=row["status"],
-        dueDate=row["due_date"],
+        id=row[0],
+        title=row[1],
+        description=row[2],
+        priority=row[3],
+        status=row[4],
+        dueDate=row[5],
     )
 
 
@@ -612,8 +677,7 @@ async def lifespan(_: FastAPI):
     # Falla al inicio si los secretos no fueron montados por la plataforma.
     get_jwt_secret()
     get_postgres_password()
-    initialize_database()
-    initialize_auth_database()
+    initialize_postgres_database()
     yield
 
 
@@ -631,11 +695,9 @@ app.add_middleware(RequestBodyLimitMiddleware, max_body_bytes=MAX_REQUEST_BODY_B
 def health_check() -> dict[str, str]:
     """Readiness check: sólo confirma disponibilidad de las dos persistencias."""
     try:
-        with get_connection() as sqlite_connection:
-            sqlite_connection.execute("SELECT 1")
-        with get_auth_connection() as postgres_connection:
-            postgres_connection.execute("SELECT 1")
-    except (OSError, psycopg.Error, sqlite3.Error) as error:
+        with get_postgres_connection() as postgres_connection:
+            postgres_connection.execute("SELECT 1 FROM tasks LIMIT 1")
+    except psycopg.Error as error:
         logger.error("healthcheck_failed dependency=database error_type=%s", type(error).__name__)
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Servicio no disponible.")
     return {"status": "ok"}
@@ -703,9 +765,14 @@ def logout(
 
 @app.get("/api/tasks", response_model=list[Task], response_model_by_alias=True)
 def list_tasks(owner: str = Depends(require_auth)) -> list[Task]:
-    with get_connection() as connection:
+    with get_postgres_connection() as connection:
         rows = connection.execute(
-            "SELECT * FROM tasks WHERE owner = ? ORDER BY rowid DESC", (owner,)
+            """
+            SELECT id, title, description, priority, status, due_date
+            FROM tasks WHERE owner = %s
+            ORDER BY created_at DESC, id DESC
+            """,
+            (owner,),
         ).fetchall()
     return [row_to_task(row) for row in rows]
 
@@ -714,10 +781,10 @@ def list_tasks(owner: str = Depends(require_auth)) -> list[Task]:
 def create_task(task_input: TaskInput, owner: str = Depends(require_auth)) -> Task:
     task = Task(id=str(uuid4()), **task_input.model_dump())
     task_data = task.model_dump(mode="json")
-    with get_connection() as connection:
+    with get_postgres_connection() as connection:
         connection.execute(
             """INSERT INTO tasks (id, title, description, priority, status, due_date, owner)
-            VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            VALUES (%s, %s, %s, %s, %s, %s, %s)""",
             (
                 task_data["id"], task_data["title"], task_data["description"], task_data["priority"],
                 task_data["status"], task_data["due_date"], owner,
@@ -730,10 +797,11 @@ def create_task(task_input: TaskInput, owner: str = Depends(require_auth)) -> Ta
 def update_task(task_id: str, task_input: TaskInput, owner: str = Depends(require_auth)) -> Task:
     task = Task(id=task_id, **task_input.model_dump())
     task_data = task.model_dump(mode="json")
-    with get_connection() as connection:
+    with get_postgres_connection() as connection:
         result = connection.execute(
-            """UPDATE tasks SET title = ?, description = ?, priority = ?, status = ?, due_date = ?
-            WHERE id = ? AND owner = ?""",
+            """UPDATE tasks
+            SET title = %s, description = %s, priority = %s, status = %s, due_date = %s
+            WHERE id = %s AND owner = %s""",
             (
                 task_data["title"], task_data["description"], task_data["priority"], task_data["status"],
                 task_data["due_date"], task_data["id"], owner,
@@ -746,8 +814,8 @@ def update_task(task_id: str, task_input: TaskInput, owner: str = Depends(requir
 
 @app.delete("/api/tasks/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_task(task_id: str, owner: str = Depends(require_auth)) -> Response:
-    with get_connection() as connection:
-        result = connection.execute("DELETE FROM tasks WHERE id = ? AND owner = ?", (task_id, owner))
+    with get_postgres_connection() as connection:
+        result = connection.execute("DELETE FROM tasks WHERE id = %s AND owner = %s", (task_id, owner))
     if result.rowcount == 0:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tarea no encontrada.")
     return Response(status_code=status.HTTP_204_NO_CONTENT)

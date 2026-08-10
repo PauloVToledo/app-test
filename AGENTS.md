@@ -22,8 +22,9 @@ en PostgreSQL. La entrada pública es Caddy; Nginx entrega la SPA y reenvía
   absolutas del backend.
 - El servicio `frontend` sólo es accesible desde `caddy`; el servicio
   `backend` no publica puertos en el host.
-- Las tareas se guardan en `backend/data/` y las sesiones en el volumen
-  Docker `postgres_data`.
+- Las tareas, usuarios y sesiones se guardan en PostgreSQL mediante el volumen
+  Docker `postgres_data`; `backend/data/` sólo conserva fuentes heredadas de
+  una migración de una sola lectura.
 - Los contratos HTTP, datos persistentes y secretos se cambian sólo con una
   migración/documentación explícita.
 
