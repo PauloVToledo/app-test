@@ -44,7 +44,9 @@ services:
       retries: 10
 
   frontend:
-    build: .
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
     expose:
       - "80"
     depends_on:
@@ -70,7 +72,7 @@ services:
       # para evitar solicitar certificados para un dominio accidental.
       TASKFLOW_DOMAIN: ${TASKFLOW_DOMAIN:?Define TASKFLOW_DOMAIN en .env}
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./infra/proxy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
@@ -86,7 +88,7 @@ services:
     expose:
       - "3100"
     volumes:
-      - ./monitoring/loki/config.yml:/etc/loki/config.yml:ro
+      - ./infra/monitoring/loki/config.yml:/etc/loki/config.yml:ro
       - loki_data:/loki
 
   alloy:
@@ -94,7 +96,7 @@ services:
     profiles: ["observability"]
     command: run --server.http.listen-addr=0.0.0.0:12345 /etc/alloy/config.alloy
     volumes:
-      - ./monitoring/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - ./infra/monitoring/alloy/config.alloy:/etc/alloy/config.alloy:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:
       loki:
@@ -112,7 +114,7 @@ services:
       GF_AUTH_ANONYMOUS_ENABLED: "false"
     volumes:
       - grafana_data:/var/lib/grafana
-      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
     secrets:
       - taskflow_grafana_admin_password
     depends_on:

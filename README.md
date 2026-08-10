@@ -1,6 +1,9 @@
-# React + Vite
+# TaskFlow
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+TaskFlow se organiza como un monorepo: `frontend/` contiene React/Vite,
+`backend/` contiene FastAPI y `infra/` concentra proxy y observabilidad.
+`compose.yaml` orquesta todos los servicios. Consulta los `AGENTS.md` de cada
+área antes de modificarla.
 
 ## Getting Started
 
@@ -14,6 +17,7 @@ This template provides a minimal setup to get React working in Vite with HMR and
 Clone the repository and install the dependencies:
 
 ```bash
+cd frontend
 npm install
 ```
 
@@ -35,7 +39,8 @@ Python 3.10 o superior y una instancia PostgreSQL accesible.
 Antes de iniciar la API, crea el primer usuario directamente en PostgreSQL:
 
 ```bash
-python backend/create_user.py --username admin
+cd backend
+python create_user.py --username admin
 ```
 
 El script pide la contraseña de forma interactiva y la almacena como hash
@@ -58,13 +63,15 @@ $env:POSTGRES_HOST = "127.0.0.1"
 Inicia el backend en una terminal:
 
 ```bash
-python -m pip install -r backend/requirements.txt
-python -m uvicorn app:app --app-dir backend --reload --port 8000
+cd backend
+python -m pip install -r requirements.txt
+python -m uvicorn app.main:app --reload --port 8000
 ```
 
 Después, en otra terminal, inicia el frontend:
 
 ```bash
+cd frontend
 npm run dev
 ```
 
@@ -110,7 +117,7 @@ Los puertos TCP 80 y 443 deben estar abiertos hacia el servidor y no pueden
 estar ocupados por otro proxy. Después inicia el stack:
 
 ```bash
-docker compose up --build
+docker compose -f compose.yaml up --build
 ```
 
 Abre `https://<TASKFLOW_DOMAIN>`. Las peticiones HTTP se redirigen a HTTPS y
@@ -122,7 +129,7 @@ El backend no publica un puerto hacia el host y el frontend solo es accesible
 para Caddy dentro de Docker. Para crear un usuario en Docker:
 
 ```bash
-docker compose exec backend python create_user.py --username admin
+docker compose -f compose.yaml exec backend python create_user.py --username admin
 ```
 
 ### Logs, alertas y health checks
@@ -138,7 +145,7 @@ Antes de activarlo, crea la contraseña local de Grafana a partir de la plantill
 ```powershell
 Copy-Item secrets/grafana_admin_password.example secrets/grafana_admin_password
 # Reemplaza el contenido por una contraseña larga y única.
-docker compose --profile observability up -d --build
+docker compose -f compose.yaml --profile observability up -d --build
 ```
 
 Usa `admin` o `GRAFANA_ADMIN_USER` como usuario y la contraseña de ese archivo.
@@ -197,12 +204,14 @@ almacenamiento común como Redis y aplica además límites en el proxy perimetra
 ### Building for Production
 
 ```bash
+cd frontend
 npm run build
 ```
 
 To preview the production build locally:
 
 ```bash
+cd frontend
 npm run preview
 ```
 

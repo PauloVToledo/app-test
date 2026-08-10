@@ -9,6 +9,8 @@ lerna-debug.log*
 
 node_modules
 dist
+frontend/node_modules
+frontend/dist
 dist-ssr
 *.local
 .env
@@ -23,6 +25,8 @@ backend/*.db
 backend/data/*
 !backend/data/users.json.example
 backend/__pycache__/
+backend/app/__pycache__/
+backend/tests/__pycache__/
 
 # Editor directories and files
 .vscode/*

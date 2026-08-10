@@ -24,7 +24,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.responses import JSONResponse
 
-DATABASE_PATH = Path(os.getenv("DATABASE_PATH", Path(__file__).parent / "data" / "taskflow.db"))
+# ``main.py`` vive en ``backend/app``; los datos persistentes pertenecen al
+# límite del servicio (``backend/data``), no al paquete de código.
+DATABASE_PATH = Path(
+    os.getenv("DATABASE_PATH", Path(__file__).resolve().parents[1] / "data" / "taskflow.db")
+)
 USERS_PATH = Path(os.getenv("USERS_PATH", DATABASE_PATH.parent / "users.json"))
 JWT_SECRET_FILE = Path(os.getenv("JWT_SECRET_FILE", "/run/secrets/taskflow_jwt_secret"))
 POSTGRES_PASSWORD_FILE = Path(

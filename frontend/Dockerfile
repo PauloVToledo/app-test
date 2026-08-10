@@ -6,11 +6,11 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 
 # Copiar manifiestos primero → mejor uso de cache de capas
-COPY package.json package-lock.json ./
+COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
 
 # Copiar el resto del código fuente
-COPY . .
+COPY frontend/ ./
 
 # Generar bundle de producción en /app/dist
 RUN npm run build
@@ -27,7 +27,7 @@ RUN rm -rf /usr/share/nginx/html/*
 COPY --from=builder /app/dist /usr/share/nginx/html
 
 # Configuración personalizada de Nginx (SPA + gzip + cache)
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY infra/proxy/nginx.conf /etc/nginx/conf.d/default.conf
 
 EXPOSE 80
 

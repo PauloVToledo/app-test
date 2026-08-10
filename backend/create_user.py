@@ -4,7 +4,7 @@ import argparse
 import getpass
 import os
 
-from app import get_auth_connection, hash_password, initialize_auth_database
+from app.main import get_auth_connection, hash_password, initialize_auth_database
 
 
 def parse_arguments() -> argparse.Namespace:
