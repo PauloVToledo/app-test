@@ -1,6 +1,7 @@
 """Pruebas de seguridad para la importación única de SQLite a PostgreSQL."""
 
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -37,7 +38,7 @@ class FakePostgresConnection:
 
 class LegacyTaskMigrationTests(unittest.TestCase):
     def create_legacy_database(self, path: Path, owner: str = "admin") -> None:
-        with sqlite3.connect(path) as connection:
+        with closing(sqlite3.connect(path)) as connection:
             connection.execute(
                 """
                 CREATE TABLE tasks (
@@ -54,6 +55,7 @@ class LegacyTaskMigrationTests(unittest.TestCase):
                 """,
                 (owner,),
             )
+            connection.commit()
 
     def test_imports_task_and_records_migration(self) -> None:
         with TemporaryDirectory() as temporary_directory:

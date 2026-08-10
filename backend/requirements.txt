@@ -2,3 +2,4 @@ fastapi==0.128.0
 argon2-cffi==25.1.0
 psycopg[binary]==3.2.10
 uvicorn[standard]==0.40.0
+httpx==0.28.1

@@ -1,6 +1,6 @@
 """API de TaskFlow con tareas, usuarios y sesiones persistidas en PostgreSQL."""
 
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, closing
 from datetime import date
 import base64
 import hashlib
@@ -307,7 +307,10 @@ def migrate_legacy_tasks(connection: psycopg.Connection) -> None:
         connection.execute("INSERT INTO application_migrations (name) VALUES (%s)", (migration_name,))
         return
 
-    with sqlite3.connect(LEGACY_SQLITE_PATH) as sqlite_connection:
+    # ``sqlite3.Connection`` confirma o revierte al salir de ``with``, pero no
+    # cierra el descriptor. ``closing`` evita conservar bloqueado el archivo
+    # heredado (especialmente visible al ejecutar la suite en Windows).
+    with closing(sqlite3.connect(LEGACY_SQLITE_PATH)) as sqlite_connection:
         sqlite_connection.row_factory = sqlite3.Row
         has_tasks_table = sqlite_connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'tasks'"
