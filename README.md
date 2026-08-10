@@ -131,7 +131,7 @@ El perfil opcional `observability` añade Grafana, Loki y Grafana Alloy. Alloy
 lee los logs de Docker y los envía a Loki; Grafana centraliza la consulta y
 provisiona alertas para errores del backend, errores JavaScript reportados por
 el frontend y ausencia de health checks. Grafana sólo se publica en el
-loopback del host (`http://localhost:3000`), nunca a través de Caddy.
+loopback del host (`http://localhost:3333`), nunca a través de Caddy.
 
 Antes de activarlo, crea la contraseña local de Grafana a partir de la plantilla:
 
