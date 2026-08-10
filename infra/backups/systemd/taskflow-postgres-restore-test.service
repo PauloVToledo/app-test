@@ -1,0 +1,16 @@
+[Unit]
+Description=TaskFlow isolated PostgreSQL restore test
+Wants=docker.service
+After=docker.service taskflow-postgres-backup.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/taskflow
+ExecStart=/usr/bin/env bash /opt/taskflow/infra/backups/restore-test-postgres.sh
+User=root
+Group=root
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/var/lib/docker

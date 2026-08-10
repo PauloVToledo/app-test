@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the TaskFlow PostgreSQL restore test every week
+
+[Timer]
+OnCalendar=Sun *-*-* 04:00:00
+Persistent=true
+RandomizedDelaySec=30m
+Unit=taskflow-postgres-restore-test.service
+
+[Install]
+WantedBy=timers.target

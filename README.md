@@ -165,6 +165,57 @@ sonda ausente. Las alertas quedan visibles en Grafana; para recibir mensajes
 externos configura un contact point en Grafana (webhook, correo, Slack, etc.)
 según el canal que uses.
 
+### Respaldos recuperables de PostgreSQL
+
+`infra/backups/` contiene el procedimiento operativo para el VPS. Cada día
+genera `pg_dump` en formato personalizado y lo envía directamente, sin dejar
+un dump en disco, a un repositorio Restic cifrado en almacenamiento de objetos
+S3-compatible **fuera del VPS**. La política de retención es **35 diarios, 12
+mensuales y 7 anuales**. El repositorio es exclusivo para PostgreSQL.
+
+Antes de activar el VPS, crea un bucket dedicado en otra cuenta o proveedor,
+con versionado y credenciales de mínimo privilegio (listar, leer, escribir y
+borrar únicamente ese bucket). No uses el disco local del VPS ni el mismo
+proveedor/cuenta administrativa como única copia. Guarda la contraseña de
+cifrado de Restic fuera de ese bucket (gestor de secretos y un mecanismo de
+recuperación documentado). Un respaldo sin esa contraseña no es recuperable.
+
+En el VPS, con el repositorio desplegado en `/opt/taskflow`, instala la
+configuración y los timers. Sustituye los valores de ejemplo por los del
+proveedor; ningún secreto se versiona.
+
+```bash
+sudo install -d -m 0700 /etc/taskflow/backup
+sudo install -m 0600 /opt/taskflow/infra/backups/restic.env.example /etc/taskflow/backup/restic.env
+sudo editor /etc/taskflow/backup/restic.env
+sudo install -m 0600 /dev/null /etc/taskflow/backup/restic_password
+sudo editor /etc/taskflow/backup/restic_password
+
+sudo install -m 0644 /opt/taskflow/infra/backups/systemd/taskflow-postgres-*.service /etc/systemd/system/
+sudo install -m 0644 /opt/taskflow/infra/backups/systemd/taskflow-postgres-*.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now taskflow-postgres-backup.timer taskflow-postgres-restore-test.timer
+```
+
+El primer respaldo y restauración deben ejecutarse manualmente y quedar
+registrados antes de considerar terminada la tarea:
+
+```bash
+sudo systemctl start taskflow-postgres-backup.service
+sudo journalctl -u taskflow-postgres-backup.service -n 100 --no-pager
+sudo systemctl start taskflow-postgres-restore-test.service
+sudo journalctl -u taskflow-postgres-restore-test.service -n 100 --no-pager
+```
+
+La restauración semanal crea un contenedor `postgres:16-alpine` temporal sin
+red, puertos ni volumen de producción. Ejecuta `restic check --read-data`,
+restaura el último dump con `pg_restore --exit-on-error`, comprueba las tablas
+críticas (`users`, `auth_sessions`, `tasks`, `application_migrations`) e
+informa sus conteos. El contenedor se borra siempre al terminar. Para una
+incidencia real, detén el stack, restaura primero en un entorno aislado con el
+script, valida la información y sólo después sigue el runbook de reemplazo del
+volumen; no restaures directamente sobre `postgres_data`.
+
 ### Sesiones JWT y refresh tokens
 
 El login devuelve un JWT de acceso con duración de 15 minutos y un refresh

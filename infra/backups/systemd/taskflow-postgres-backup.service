@@ -1,0 +1,16 @@
+[Unit]
+Description=TaskFlow PostgreSQL encrypted external backup
+Wants=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/taskflow
+ExecStart=/usr/bin/env bash /opt/taskflow/infra/backups/backup-postgres.sh
+User=root
+Group=root
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/var/lib/docker
