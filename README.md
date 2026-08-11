@@ -7,6 +7,10 @@ TaskFlow se organiza como un monorepo: `frontend/` contiene React/Vite,
 
 ## Getting Started
 
+Para configurar una máquina nueva de producción, sigue el runbook completo en
+[`docs/PROVISION-VPS.md`](docs/PROVISION-VPS.md). Esta sección conserva sólo
+la referencia rápida para desarrollo y Docker.
+
 ### Prerequisites
 
 - [Node.js](https://nodejs.org/) (v18 or higher recommended)
@@ -91,7 +95,7 @@ configura un nombre DNS público que ya apunte a la IP del servidor:
 
 ```bash
 cp .env.example .env
-# El FQDN ya está documentado; ajústalo sólo si cambia la entrada pública.
+# Configura TASKFLOW_DOMAIN con el FQDN público de este despliegue.
 
 # Crea secretos de producción fuera de Git (un valor por archivo).
 mkdir secrets
@@ -114,8 +118,8 @@ sustituye estas fuentes `file:` por su integración nativa de secretos sin
 cambiar el código, que ya consume rutas de archivos.
 
 Antes de iniciar el stack en el VPS, en el proveedor DNS crea un registro `A`
-para `tasks.testpov.querty.free.time.free.com` que apunte a la IP pública del
-VPS. Déjalo inicialmente como **DNS only** (sin proxy de Cloudflare), abre los
+para el valor de `TASKFLOW_DOMAIN` que apunte a la IP pública del VPS. Déjalo
+inicialmente como **DNS only** (sin proxy de Cloudflare), abre los
 puertos TCP 80 y 443 en el firewall y verifica que ningún otro proceso los
 ocupe. Caddy obtendrá el certificado ACME cuando el DNS ya propague.
 
@@ -125,13 +129,13 @@ Después inicia el stack:
 docker compose -f compose.yaml up --build
 ```
 
-Abre `https://tasks.testpov.querty.free.time.free.com`. Las peticiones HTTP se redirigen a HTTPS y
+Abre `https://${TASKFLOW_DOMAIN}`. Las peticiones HTTP se redirigen a HTTPS y
 las respuestas HTTPS incluyen HSTS (`max-age=31536000; includeSubDomains`). No
 habilites subdominios que no puedan usar HTTPS: los navegadores recordarán esa
 política durante un año. Como comprobación final desde una red externa:
 
 ```bash
-curl -I https://tasks.testpov.querty.free.time.free.com
+curl -I "https://${TASKFLOW_DOMAIN}"
 ```
 
 El backend no publica un puerto hacia el host y el frontend solo es accesible
