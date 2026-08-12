@@ -12,6 +12,7 @@ services:
       POSTGRES_PORT: 5432
       POSTGRES_DB: ${POSTGRES_DB:-taskflow}
       POSTGRES_USER: ${POSTGRES_USER:-taskflow}
+      TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-172.31.0.0/24}
     volumes:
       # Fuente heredada de una sola lectura para migrar SQLite/JSON a PostgreSQL.
       # El servicio ya no escribe datos de aplicación en el sistema de archivos.
@@ -22,6 +23,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    networks:
+      - app_internal
     healthcheck:
       test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://localhost:8000/api/healthz', timeout=3)"]
       interval: 30s
@@ -44,6 +47,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    networks:
+      - app_internal
 
   frontend:
     build:
@@ -61,6 +66,9 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+    networks:
+      - edge
+      - app_internal
 
   # Única entrada pública: Caddy obtiene y renueva el certificado ACME y
   # redirige automáticamente las peticiones HTTP a HTTPS.
@@ -80,6 +88,8 @@ services:
     depends_on:
       frontend:
         condition: service_healthy
+    networks:
+      - edge
 
   # Observabilidad local: no se publica a Internet. Grafana queda limitado al
   # loopback del host y Alloy sólo puede leer el socket Docker.
@@ -134,6 +144,18 @@ volumes:
   postgres_data:
   loki_data:
   grafana_data:
+
+networks:
+  # Sólo Caddy y Nginx comparten la red de entrada. La API y PostgreSQL no
+  # tienen ruta directa desde el host ni desde Caddy.
+  edge:
+    driver: bridge
+  app_internal:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.31.0.0/24
 
 secrets:
   taskflow_jwt_secret:

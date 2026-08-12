@@ -9,6 +9,7 @@ import json
 import logging
 import os
 from pathlib import Path
+from ipaddress import ip_address, ip_network
 import secrets
 import sqlite3
 from threading import Lock
@@ -50,6 +51,14 @@ LOGIN_RATE_LIMIT_ATTEMPTS = int(os.getenv("LOGIN_RATE_LIMIT_ATTEMPTS", "5"))
 LOGIN_RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("LOGIN_RATE_LIMIT_WINDOW_SECONDS", "60"))
 LOGIN_LOCKOUT_FAILURES = int(os.getenv("LOGIN_LOCKOUT_FAILURES", "5"))
 LOGIN_LOCKOUT_SECONDS = int(os.getenv("LOGIN_LOCKOUT_SECONDS", "900"))
+# Sólo Nginx puede declarar la IP original al backend. La red se fija en
+# Compose para que esta política no dependa de direcciones Docker efímeras.
+TRUSTED_PROXY_CIDRS = tuple(
+    ip_network(value.strip())
+    for value in os.getenv("TRUSTED_PROXY_CIDRS", "172.31.0.0/24").split(",")
+    if value.strip()
+)
+CLIENT_IP_HEADER = "x-taskflow-client-ip"
 PASSWORD_ITERATIONS = 600_000
 # Perfil Argon2id compatible con servidores pequeños: 19 MiB, dos pasadas y
 # un hilo. Mantiene un coste de memoria relevante sin bloquear Docker Desktop.
@@ -559,11 +568,27 @@ def revoke_session(session_id: str | None = None, refresh_token: str | None = No
 
 
 def get_client_ip(request: Request) -> str:
-    """Obtiene la IP original enviada por el proxy interno de confianza."""
-    forwarded_for = request.headers.get("x-forwarded-for")
-    if forwarded_for:
-        return forwarded_for.split(",", maxsplit=1)[0].strip()
-    return request.client.host if request.client else "unknown"
+    """Devuelve la IP declarada únicamente por el proxy interno autorizado.
+
+    El encabezado público ``X-Forwarded-For`` nunca se interpreta aquí: Caddy
+    lo normaliza y Nginx lo transforma en un encabezado privado antes de llegar
+    a esta aplicación. Así, una conexión directa no puede elegir su clave de
+    rate limiting.
+    """
+    peer_ip = request.client.host if request.client else "unknown"
+    try:
+        parsed_peer_ip = ip_address(peer_ip)
+        peer_is_trusted = any(parsed_peer_ip in network for network in TRUSTED_PROXY_CIDRS)
+    except ValueError:
+        peer_is_trusted = False
+
+    forwarded_ip = request.headers.get(CLIENT_IP_HEADER)
+    if peer_is_trusted and forwarded_ip:
+        try:
+            return str(ip_address(forwarded_ip.strip()))
+        except ValueError:
+            logger.warning("invalid_client_ip_header peer_ip=%s", peer_ip)
+    return peer_ip
 
 
 def allow_frontend_error_report(client_ip: str) -> bool:

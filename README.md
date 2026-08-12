@@ -263,9 +263,39 @@ respuestas bloqueadas usan `429` e incluyen `Retry-After`.
 
 Puedes ajustar estos valores en `.env` mediante `MAX_REQUEST_BODY_BYTES`,
 `LOGIN_RATE_LIMIT_ATTEMPTS`, `LOGIN_RATE_LIMIT_WINDOW_SECONDS`,
-`LOGIN_LOCKOUT_FAILURES` y `LOGIN_LOCKOUT_SECONDS`. En varias réplicas del
-backend estos límites en memoria no se comparten: para ese escenario usa un
-almacenamiento común como Redis y aplica además límites en el proxy perimetral.
+`LOGIN_LOCKOUT_FAILURES` y `LOGIN_LOCKOUT_SECONDS`. Los límites del proceso
+son una segunda barrera: se reinician al recrear el contenedor y no se comparten
+entre réplicas. Las reglas perimetrales versionadas están en
+[`infra/cloudflare/`](infra/cloudflare/README.md) y son la barrera que debe
+estar activa en producción.
+
+### Proxies confiables y Cloudflare
+
+La IP del cliente sólo se acepta por esta cadena: Cloudflare (rangos oficiales)
+→ Caddy → Nginx → FastAPI. Caddy confía en `CF-Connecting-IP` únicamente cuando
+la conexión TCP proviene de un rango Cloudflare y reemplaza los encabezados de
+reenvío; Nginx entrega esa IP como `X-TaskFlow-Client-IP`; FastAPI sólo acepta
+ese encabezado desde `app_internal` (`172.31.0.0/24`). Una petición directa o
+un `X-Forwarded-For` forjado queda limitado por su IP TCP real.
+
+En el VPS, permite TCP 80/443 **sólo** desde los rangos oficiales de Cloudflare
+y bloquea el resto antes de activar el proxy naranja. Mantén la lista del
+`Caddyfile` sincronizada con <https://www.cloudflare.com/ips>. Si se deja el
+origen público, alguien podría omitir las reglas de Cloudflare; la validación
+del encabezado en Caddy sigue evitando que suplante una IP distinta.
+
+Para verificar el recorrido desplegado, ejecuta `docker compose config`,
+`docker compose up -d --build`, y desde dos IP distintas realiza seis `POST`
+a `/api/auth/login`: Cloudflare debe responder `429` al sexto sin registrar
+una petición nueva en el backend. Repite con `POST /api/telemetry/frontend-errors`
+(31 peticiones por minuto). Comprueba además que un `X-Forwarded-For` enviado
+por el cliente no cambia la clave del límite en los logs del backend.
+
+Para varias réplicas, sustituye los diccionarios locales por un almacén común
+antes de escalar. El diseño recomendado es Redis con contadores `INCR` y TTL
+atómicos por `login:<ip>`, `lockout:<username>:<ip>` y `telemetry:<ip>`; si ya
+se administra PostgreSQL únicamente, una tabla de ventanas con limpieza por
+TTL es posible, pero introduce más contención y latencia en el login.
 
 ### Building for Production
 
