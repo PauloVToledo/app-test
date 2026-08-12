@@ -100,6 +100,20 @@ docker compose logs --tail=100 caddy backend postgres
 curl --fail --silent --show-error --head "https://${TASKFLOW_DOMAIN}"
 ```
 
+Cada servicio usa `restart: unless-stopped` y rota el driver `json-file` a
+tres archivos de 10 MiB. Verifica que Docker aplicó ambas políticas y que un
+reinicio controlado recupera el backend:
+
+```bash
+docker inspect -f '{{.HostConfig.RestartPolicy.Name}} {{.HostConfig.LogConfig.Type}} {{json .HostConfig.LogConfig.Config}}' "$(docker compose ps -q backend)"
+docker compose restart backend
+docker compose ps backend
+```
+
+La salida de la primera orden debe contener `unless-stopped json-file` y
+`max-size`/`max-file`; la segunda debe mostrar el backend saludable tras su
+health check.
+
 La primera ejecución crea el volumen `postgres_data` y Caddy solicita el
 certificado ACME. Si HTTPS falla, verifica primero DNS, firewall y que ningún
 otro proceso esté usando los puertos `80`/`443`.
@@ -192,6 +206,9 @@ configuración del proveedor.
 - `.env` proviene de `.env.example` y no contiene credenciales.
 - Los tres secretos de Compose existen sólo en `secrets/` con permisos `0600`.
 - `docker compose config --quiet` pasa y sólo Caddy publica `80/443`.
+- Cada servicio tiene reinicio `unless-stopped`, logs Docker rotados y las
+  imágenes externas y bases de build están fijadas por digest.
+- Un `docker compose restart backend` devuelve el backend a estado saludable.
 - HTTPS responde para el FQDN configurado y el usuario inicial puede iniciar
   sesión.
 - El backup y la restauración aislada terminan correctamente y sus logs quedan

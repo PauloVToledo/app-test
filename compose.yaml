@@ -1,6 +1,12 @@
 services:
   backend:
     build: ./backend
+    restart: unless-stopped
+    logging: &default-logging
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     expose:
       - "8000"
     env_file:
@@ -33,7 +39,9 @@ services:
       start_period: 15s
 
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+    restart: unless-stopped
+    logging: *default-logging
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-taskflow}
       POSTGRES_USER: ${POSTGRES_USER:-taskflow}
@@ -54,6 +62,8 @@ services:
     build:
       context: .
       dockerfile: frontend/Dockerfile
+    restart: unless-stopped
+    logging: *default-logging
     expose:
       - "80"
     depends_on:
@@ -73,7 +83,9 @@ services:
   # Única entrada pública: Caddy obtiene y renueva el certificado ACME y
   # redirige automáticamente las peticiones HTTP a HTTPS.
   caddy:
-    image: caddy:2-alpine
+    image: caddy:2-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
+    restart: unless-stopped
+    logging: *default-logging
     ports:
       - "80:80"
       - "443:443"
@@ -94,8 +106,10 @@ services:
   # Observabilidad local: no se publica a Internet. Grafana queda limitado al
   # loopback del host y Alloy sólo puede leer el socket Docker.
   loki:
-    image: grafana/loki:3.3.2
+    image: grafana/loki:3.3.2@sha256:8af2de1abbdd7aa92b27c9bcc96f0f4140c9096b507c77921ffddf1c6ad6c48f
     profiles: ["observability"]
+    restart: unless-stopped
+    logging: *default-logging
     command: -config.file=/etc/loki/config.yml
     expose:
       - "3100"
@@ -104,8 +118,10 @@ services:
       - loki_data:/loki
 
   alloy:
-    image: grafana/alloy:v1.7.4
+    image: grafana/alloy:v1.7.4@sha256:fd2d274beeed926ffe62cf353df12a69d37af61e9a27eb4dc897a127755e4d95
     profiles: ["observability"]
+    restart: unless-stopped
+    logging: *default-logging
     command: run --server.http.listen-addr=0.0.0.0:12345 /etc/alloy/config.alloy
     volumes:
       - ./infra/monitoring/alloy/config.alloy:/etc/alloy/config.alloy:ro
@@ -115,8 +131,10 @@ services:
         condition: service_started
 
   grafana:
-    image: grafana/grafana:11.5.2
+    image: grafana/grafana:11.5.2@sha256:8b37a2f028f164ce7b9889e1765b9d6ee23fec80f871d156fbf436d6198d32b7
     profiles: ["observability"]
+    restart: unless-stopped
+    logging: *default-logging
     ports:
       - "127.0.0.1:3333:3000"
     environment:
